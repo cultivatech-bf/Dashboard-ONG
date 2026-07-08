@@ -222,7 +222,7 @@ function showApp() {
   document.getElementById('loginScreen').style.display = 'none'
   document.getElementById('app').style.display = 'block'
   document.getElementById('topbarName').textContent = USER.name
-  document.getElementById('topbarRegion').textContent = '&#128205; ' + (USER.region || 'National')
+  document.getElementById('topbarRegion').textContent = '\u{1F4CD} ' + (USER.region || 'National')
   buildTabBar()
 }
 
