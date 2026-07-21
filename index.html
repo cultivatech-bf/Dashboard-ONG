@@ -5,6 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>CultivaTech — Portail ONG</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap');
   :root {
@@ -126,6 +128,29 @@
   .btn-outline{background:none;border:1px solid var(--border);border-radius:9px;padding:7px 14px;font-size:12px;cursor:pointer;font-family:'DM Sans',sans-serif;color:var(--muted);transition:all .2s;display:inline-flex;align-items:center;gap:5px}
   .btn-outline:hover{border-color:var(--vert2);color:var(--vert);background:var(--vert-bg)}
   .formation-prix{font-family:'DM Mono',monospace;font-size:12px;color:var(--vert);font-weight:600}
+  /* ── RAPPORT PDF (vue imprimable) ─────────────────────────────────── */
+  #reportView{display:none}
+  @media print{
+    #app,#loginScreen{display:none!important}
+    #reportView{display:block!important;font-family:'DM Sans',Arial,sans-serif;color:#1A2E1A;padding:0 8mm}
+    #reportView h1{font-family:'Playfair Display',Georgia,serif;font-size:22pt;color:#1A5319;margin-bottom:2mm}
+    #reportView h2{font-size:13pt;color:#1A5319;margin:8mm 0 3mm;border-bottom:1.5pt solid #36AF3B;padding-bottom:1.5mm}
+    #reportView .r-sub{color:#6B8F6B;font-size:10pt;margin-bottom:1mm}
+    #reportView .r-scope{font-size:10pt;font-weight:600;color:#1A5319;background:#EAF5EA;padding:2mm 4mm;border-radius:2mm;display:inline-block;margin:3mm 0}
+    #reportView table{width:100%;border-collapse:collapse;font-size:9.5pt;margin-bottom:4mm}
+    #reportView th{background:#EAF5EA;color:#1A5319;text-align:left;padding:2mm 3mm;border:0.5pt solid #C8E6C9}
+    #reportView td{padding:2mm 3mm;border:0.5pt solid #E4EDE4}
+    #reportView .r-kpis{display:flex;flex-wrap:wrap;gap:4mm;margin:4mm 0}
+    #reportView .r-kpi{border:0.75pt solid #C8E6C9;border-radius:2mm;padding:3mm 5mm;min-width:30mm}
+    #reportView .r-kpi b{display:block;font-size:16pt;color:#1A5319}
+    #reportView .r-kpi span{font-size:8.5pt;color:#6B8F6B}
+    #reportView .r-footer{margin-top:8mm;padding-top:3mm;border-top:0.75pt solid #C8E6C9;font-size:8.5pt;color:#6B8F6B;text-align:center}
+  }
+  /* Carte Leaflet */
+  #leafletMap{height:540px;border-radius:14px;z-index:1}
+  .map-legend{display:flex;flex-wrap:wrap;gap:14px;margin-top:12px;font-size:12px;color:var(--muted)}
+  .map-legend span{display:inline-flex;align-items:center;gap:6px}
+  .map-dot{width:12px;height:12px;border-radius:50%;display:inline-block}
   @media(max-width:900px){.charts-grid,.charts-grid-3{grid-template-columns:1fr}}
   @media(max-width:768px){.kpi-grid{grid-template-columns:repeat(2,1fr)}.content{padding:16px}.topbar{padding:0 16px}}
 </style>
@@ -162,6 +187,8 @@
     </div>
     <div class="topbar-right">
       <span id="topbarRegion" class="topbar-region"></span>
+      <button class="refresh-btn" onclick="generateReport()">&#128196; Rapport PDF</button>
+      <button class="refresh-btn" onclick="exportRegionsCSV()">&#11015;&#65039; CSV</button>
       <button class="refresh-btn" onclick="fetchAndRender()">&#8635; Actualiser</button>
       <button class="logout-btn" onclick="logout()">D&#233;connexion</button>
     </div>
@@ -171,6 +198,9 @@
     <div class="loading"><div class="spinner"></div><div>Chargement&#8230;</div></div>
   </main>
 </div>
+
+<!-- Vue imprimable du rapport (visible uniquement à l'impression) -->
+<div id="reportView"></div>
 
 <script>
 var FUNCTIONS_URL = 'https://vyqhzagajlbosikzfnit.supabase.co/functions/v1'
@@ -186,11 +216,12 @@ var PAGE_SIZE    = 15
 var TAB_META = {
   overview: {icon:'&#128202;', label:"Vue d'ensemble"},
   terrain:  {icon:'&#127806;', label:'Terrain'},
+  carte:    {icon:'&#128506;&#65039;', label:'Carte'},
   formations:{icon:'&#127891;',label:'Formations'},
   alertes:  {icon:'&#128680;', label:'Alertes &amp; Risques'},
   calendrier:{icon:'&#128197;',label:'Calendrier cultural'}
 }
-var ONG_TABS = ['overview','terrain','formations','alertes','calendrier']
+var ONG_TABS = ['overview','terrain','carte','formations','alertes','calendrier']
 
 if (TOKEN && USER && USER.role === 'ong') { showApp(); fetchAndRender() }
 
@@ -222,7 +253,7 @@ function showApp() {
   document.getElementById('loginScreen').style.display = 'none'
   document.getElementById('app').style.display = 'block'
   document.getElementById('topbarName').textContent = USER.name
-  document.getElementById('topbarRegion').textContent = '\u{1F4CD} ' + (USER.region || 'National')
+  document.getElementById('topbarRegion').innerHTML = '📍 ' + esc(USER.region || 'National')
   buildTabBar()
 }
 
@@ -254,6 +285,7 @@ async function fetchAndRender() {
     if (res.status === 401) { logout(); return }
     if (!res.ok) throw new Error('HTTP ' + res.status)
     DATA = await res.json()
+    updateScopeBadge()
     killCharts(); renderCurrentTab()
   } catch (e) {
     document.getElementById('mainContent').innerHTML = '<div class="empty-state"><div class="empty-icon">&#9888;&#65039;</div><div style="margin-bottom:14px">Impossible de charger les donn\xe9es.<br><small style="color:var(--muted)">'+e.message+'</small></div><button onclick="fetchAndRender()" class="btn-outline" style="margin:0 auto">&#8634; R\xe9essayer</button></div>'
@@ -261,11 +293,48 @@ async function fetchAndRender() {
 }
 
 function renderCurrentTab() {
-  ({overview:renderOverview, terrain:renderTerrain, formations:renderFormations, alertes:renderAlertes, calendrier:renderCalendrier}[currentTab]||renderOverview)()
+  ({overview:renderOverview, terrain:renderTerrain, carte:renderCarte, formations:renderFormations, alertes:renderAlertes, calendrier:renderCalendrier}[currentTab]||renderOverview)()
+}
+
+// ── PÉRIMÈTRE DONNÉES (bénéficiaires rattachés vs vue globale) ────────────────
+function isOrgScope() { return DATA && DATA.scope === 'organisation' }
+
+function updateScopeBadge() {
+  var el = document.getElementById('topbarRegion')
+  if (!el || !DATA) return
+  if (isOrgScope()) {
+    el.innerHTML = '&#128101; ' + DATA.beneficiaires_rattaches + ' b\xe9n\xe9ficiaire' +
+      (DATA.beneficiaires_rattaches > 1 ? 's' : '') + ' rattach\xe9' +
+      (DATA.beneficiaires_rattaches > 1 ? 's' : '')
+    el.style.background = '#E8F5E9'
+    el.style.borderColor = '#A5D6A7'
+    el.style.color = 'var(--vert)'
+  } else {
+    el.innerHTML = '&#128269; Vue globale — d\xe9monstration'
+    el.style.background = '#FFF8E1'
+    el.style.borderColor = '#FFE082'
+    el.style.color = '#7D6608'
+  }
+}
+
+function scopeBanner() {
+  if (!DATA) return ''
+  if (isOrgScope()) {
+    return '<div class="info-banner">&#128274; Donn\xe9es filtr\xe9es sur vos <strong>&nbsp;' +
+      DATA.beneficiaires_rattaches + '&nbsp;</strong> b\xe9n\xe9ficiaires rattach\xe9s et consentants. ' +
+      'Les autres utilisateurs CultivaTech ne sont pas inclus.</div>'
+  }
+  return '<div class="warn-banner">&#9888;&#65039; Mode d\xe9monstration — aucun b\xe9n\xe9ficiaire ' +
+    'rattach\xe9 pour le moment. Les chiffres couvrent l\'ensemble de la base CultivaTech. ' +
+    'Communiquez votre <strong>&nbsp;code programme&nbsp;</strong> \xe0 vos b\xe9n\xe9ficiaires : ' +
+    'd\xe8s leur inscription, ce tableau de bord n\'affichera plus que leurs donn\xe9es.</div>'
 }
 
 // ── CHARTS ────────────────────────────────────────────────────────────────────
-function killCharts() { Object.values(CHARTS).forEach(function(c){try{c.destroy()}catch(e){}}); CHARTS={} }
+function killCharts() {
+  Object.values(CHARTS).forEach(function(c){try{c.destroy()}catch(e){}}); CHARTS={}
+  if (window.MAP) { try{ window.MAP.remove() }catch(e){} window.MAP = null }
+}
 function mkChart(id, cfg) {
   var el = document.getElementById(id); if(!el) return null
   try { var ex=Chart.getChart(el); if(ex) ex.destroy() } catch(e){}
@@ -289,6 +358,185 @@ function donutOpts(opt) {
 }
 function greenPalette(n) { var arr=[]; for(var i=0;i<n;i++) arr.push('hsl('+(120+i*18)+','+(60-i*2)+'%,'+(38+i*3)+'%)'); return arr }
 var URGCOL = {'\xc9lev\xe9e':'#C0392B','Mod\xe9r\xe9e':'#D68910','Faible':'#36AF3B','Inconnue':'#aaa'}
+
+// ════ CARTE LEAFLET ═══════════════════════════════════════════════════════════
+// Chefs-lieux des 13 régions (pour les cercles zones d'urgence)
+var REGION_COORDS = {
+  'Sahel':[14.03,-0.03],'Est':[12.06,0.36],'Nord':[13.58,-2.42],
+  'Boucle du Mouhoun':[12.46,-3.46],'Centre-Nord':[13.09,-1.09],
+  'Centre-Est':[11.78,-0.37],'Sud-Ouest':[10.33,-3.18],'Centre':[12.37,-1.52],
+  'Hauts-Bassins':[11.18,-4.29],'Cascades':[10.63,-4.76],
+  'Centre-Ouest':[12.25,-2.36],'Centre-Sud':[11.66,-1.07],'Plateau-Central':[12.58,-1.30]
+}
+var ZONE_COLORS = { critique:'#C0392B', eleve:'#D68910', modere:'#2471A3' }
+
+function renderCarte() {
+  var pts = (DATA.ong && DATA.ong.carte) || []
+  var inDanger = pts.filter(function(p){
+    var z = SECURITY_ZONES[p.region]
+    return z && (z.level === 'critique' || z.level === 'eleve')
+  })
+  var html = '<div class="page-header"><h2 class="section-title">&#128506;&#65039; Carte des b\xe9n\xe9ficiaires</h2><p class="section-sub">Terrains g\xe9olocalis\xe9s et zones sous \xe9tat d\'urgence (sources officielles TPMA / SP-CONASUR)</p></div>'
+  html += scopeBanner()
+  html += '<div class="kpi-grid" style="grid-template-columns:repeat(3,1fr)">'
+  html += kpiCard('','&#128205;',pts.length,'Terrains g\xe9olocalis\xe9s')
+  html += kpiCard('kpi-red','&#128680;',inDanger.length,'En zone d\'urgence')
+  html += kpiCard('kpi-blue','&#127757;',Object.keys(SECURITY_ZONES).length,'R\xe9gions sous surveillance')
+  html += '</div>'
+  html += '<div class="table-card" style="padding:16px">'
+  html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">'
+  html += '<div class="table-title">Localisation des terrains agricoles</div>'
+  html += '<button class="btn-outline" onclick="exportCarteCSV()">&#11015;&#65039; Exporter CSV</button></div>'
+  html += '<div id="leafletMap"></div>'
+  html += '<div class="map-legend">'
+  html += '<span><span class="map-dot" style="background:#36AF3B"></span>B\xe9n\xe9ficiaire (score &#8805; 60)</span>'
+  html += '<span><span class="map-dot" style="background:#D68910"></span>B\xe9n\xe9ficiaire (score &lt; 60)</span>'
+  html += '<span><span class="map-dot" style="background:rgba(192,57,43,.35);border:2px solid #C0392B"></span>Zone \xe9tat d\'urgence</span>'
+  html += '<span><span class="map-dot" style="background:rgba(214,137,16,.35);border:2px solid #D68910"></span>\xc9tat d\'urgence partiel</span>'
+  html += '</div></div>'
+  if (pts.length === 0) {
+    html += '<div class="info-banner">&#128161; Aucun terrain g\xe9olocalis\xe9 pour le moment. Les b\xe9n\xe9ficiaires enregistrent la position de leur terrain dans l\'app CultivaTech (Profil &#8594; Terrain agricole).</div>'
+  }
+  document.getElementById('mainContent').innerHTML = html
+
+  setTimeout(function() {
+    if (typeof L === 'undefined') return
+    var map = L.map('leafletMap').setView([12.3,-1.6], 7)
+    window.MAP = map
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; OpenStreetMap', maxZoom: 17
+    }).addTo(map)
+
+    // Calque zones d'urgence (cercles sur les régions concernées)
+    Object.keys(SECURITY_ZONES).forEach(function(reg) {
+      var z = SECURITY_ZONES[reg], c = REGION_COORDS[reg]
+      if (!c) return
+      L.circle(c, {
+        radius: 65000,
+        color: ZONE_COLORS[z.level] || '#aaa',
+        weight: 2,
+        fillColor: ZONE_COLORS[z.level] || '#aaa',
+        fillOpacity: 0.13
+      }).addTo(map).bindPopup(
+        '<b>' + esc(reg) + ' — ' + esc(z.label) + '</b><br>' +
+        '<small>Provinces : ' + esc(z.provinces) + '</small><br>' +
+        '<small style="color:#666">' + esc(z.source) + '</small>'
+      )
+    })
+
+    // Marqueurs bénéficiaires
+    pts.forEach(function(p) {
+      if (typeof p.lat !== 'number' || typeof p.lng !== 'number') return
+      var col = (p.score !== null && p.score >= 60) ? '#36AF3B' : '#D68910'
+      L.circleMarker([p.lat, p.lng], {
+        radius: 7, color: '#fff', weight: 2, fillColor: col, fillOpacity: 0.95
+      }).addTo(map).bindPopup(
+        '<b>' + esc(p.nom) + '</b><br>' +
+        (p.region ? '<small>' + esc(p.region) + (p.province ? ' — ' + esc(p.province) : '') + '</small><br>' : '') +
+        (p.score !== null ? '<small>Score agricole : <b>' + p.score + '</b></small><br>' : '') +
+        (p.statut ? '<small>' + esc(p.statut) + '</small>' : '')
+      )
+    })
+
+    // Ajuster la vue si des points existent
+    if (pts.length > 0) {
+      var grp = pts.filter(function(p){return typeof p.lat==='number'}).map(function(p){return [p.lat,p.lng]})
+      if (grp.length > 0) { try { map.fitBounds(grp, {padding:[40,40], maxZoom:11}) } catch(e){} }
+    }
+  }, 60)
+}
+
+// ════ EXPORTS CSV ═════════════════════════════════════════════════════════════
+function downloadCSV(filename, rows) {
+  var csv = rows.map(function(r){
+    return r.map(function(v){
+      v = (v === null || v === undefined) ? '' : String(v)
+      return /[";\n]/.test(v) ? '"' + v.replace(/"/g,'""') + '"' : v
+    }).join(';')
+  }).join('\r\n')
+  // BOM UTF-8 pour Excel
+  var blob = new Blob(['﻿' + csv], {type:'text/csv;charset=utf-8'})
+  var a = document.createElement('a')
+  a.href = URL.createObjectURL(blob)
+  a.download = filename
+  a.click()
+  URL.revokeObjectURL(a.href)
+}
+
+function exportRegionsCSV() {
+  var regs = (DATA && DATA.ong && DATA.ong.scores && DATA.ong.scores.by_region) || []
+  if (regs.length === 0) { alert('Aucune donn\xe9e r\xe9gionale \xe0 exporter.'); return }
+  var rows = [['R\xe9gion','B\xe9n\xe9ficiaires','Score moyen','\xc9ligibles cr\xe9dit','Taux \xe9ligibilit\xe9 (%)']]
+  regs.forEach(function(r){ rows.push([r.region, r.total, r.moyenne, r.eligible, r.taux_eligible]) })
+  downloadCSV('cultivatech_regions_' + new Date().toISOString().slice(0,10) + '.csv', rows)
+}
+
+function exportCarteCSV() {
+  var pts = (DATA && DATA.ong && DATA.ong.carte) || []
+  if (pts.length === 0) { alert('Aucun terrain g\xe9olocalis\xe9 \xe0 exporter.'); return }
+  var rows = [['Nom','R\xe9gion','Province','Score','Statut cr\xe9dit','Latitude','Longitude']]
+  pts.forEach(function(p){ rows.push([p.nom, p.region, p.province, p.score, p.statut, p.lat, p.lng]) })
+  downloadCSV('cultivatech_terrains_' + new Date().toISOString().slice(0,10) + '.csv', rows)
+}
+
+// ════ RAPPORT PDF (impression navigateur) ═════════════════════════════════════
+function generateReport() {
+  if (!DATA) { alert('Chargez d\'abord les donn\xe9es.'); return }
+  var k    = DATA.kpis || {}
+  var ong  = DATA.ong  || {}
+  var g    = (ong.scores && ong.scores.global) || {}
+  var regs = (ong.scores && ong.scores.by_region) || []
+  var vuln = (ong.diagnostics && ong.diagnostics.vulnerabilite) || []
+  var tr   = ong.trainings || {}
+  var now  = new Date()
+
+  var benefLabel = isOrgScope()
+    ? DATA.beneficiaires_rattaches + ' b\xe9n\xe9ficiaires rattach\xe9s (donn\xe9es filtr\xe9es, consentement v\xe9rifi\xe9)'
+    : k.users + ' utilisateurs (vue globale — mode d\xe9monstration)'
+
+  var h = '<h1>&#127807; CultivaTech — Rapport de suivi</h1>'
+  h += '<div class="r-sub">' + esc(USER.organization || USER.name || 'Organisation partenaire') + '</div>'
+  h += '<div class="r-sub">G\xe9n\xe9r\xe9 le ' + now.toLocaleDateString('fr-FR', {dateStyle:'long'}) + ' \xe0 ' + now.toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'}) + '</div>'
+  h += '<div class="r-scope">&#128101; ' + benefLabel + '</div>'
+
+  h += '<h2>Indicateurs cl\xe9s</h2><div class="r-kpis">'
+  h += '<div class="r-kpi"><b>' + (isOrgScope() ? DATA.beneficiaires_rattaches : (k.users||0)) + '</b><span>B\xe9n\xe9ficiaires</span></div>'
+  h += '<div class="r-kpi"><b>' + (k.productions||0) + '</b><span>Productions</span></div>'
+  h += '<div class="r-kpi"><b>' + (k.diagnostics||0) + '</b><span>Diagnostics</span></div>'
+  h += '<div class="r-kpi"><b>' + (g.moyenne||'—') + '</b><span>Score moyen</span></div>'
+  h += '<div class="r-kpi"><b>' + (g.eligible||0) + '</b><span>\xc9ligibles cr\xe9dit</span></div>'
+  h += '<div class="r-kpi"><b>' + (tr.total||0) + '</b><span>Formations</span></div>'
+  h += '</div>'
+
+  if (regs.length > 0) {
+    h += '<h2>R\xe9partition r\xe9gionale</h2><table><tr><th>R\xe9gion</th><th>B\xe9n\xe9ficiaires</th><th>Score moyen</th><th>\xc9ligibles</th><th>Taux</th></tr>'
+    regs.forEach(function(r){
+      h += '<tr><td>' + esc(r.region) + '</td><td>' + r.total + '</td><td>' + r.moyenne + '</td><td>' + r.eligible + '</td><td>' + r.taux_eligible + '%</td></tr>'
+    })
+    h += '</table>'
+  }
+
+  var topC = ong.top_cultures || []
+  if (topC.length > 0) {
+    h += '<h2>Cultures pratiqu\xe9es</h2><table><tr><th>Culture</th><th>Productions</th></tr>'
+    topC.slice(0,8).forEach(function(c){ h += '<tr><td>' + esc(c.name) + '</td><td>' + c.total + '</td></tr>' })
+    h += '</table>'
+  }
+
+  if (vuln.length > 0) {
+    h += '<h2>Menaces phytosanitaires d\xe9tect\xe9es</h2><table><tr><th>Maladie / Ravageur</th><th>Cas</th><th>Urgence</th><th>Cultures touch\xe9es</th></tr>'
+    vuln.slice(0,10).forEach(function(v){
+      h += '<tr><td>' + esc(v.name) + '</td><td>' + v.count + '</td><td>' + esc(v.urgency) + '</td><td>' + esc((v.cultures||[]).join(', ')) + '</td></tr>'
+    })
+    h += '</table>'
+  }
+
+  h += '<div class="r-footer">Rapport g\xe9n\xe9r\xe9 par CultivaTech — plateforme d\'agriculture intelligente au Burkina Faso<br>'
+  h += 'Donn\xe9es collect\xe9es via l\'application mobile CultivaTech &middot; SAW-SARL &middot; contact : +226 71 91 17 44</div>'
+
+  document.getElementById('reportView').innerHTML = h
+  window.print()
+}
 
 // ── DONNÉES STATIQUES ─────────────────────────────────────────────────────────
 var BFA_CALENDAR = [
@@ -334,11 +582,14 @@ function renderOverview() {
   var urgent = vuln.filter(function(v){ return v.urgency==='\xc9lev\xe9e' })
 
   var html = '<div class="page-header"><h2 class="section-title">Vue d\'ensemble</h2><p class="section-sub">Indicateurs cl\xe9s — mis \xe0 jour le '+fmtDate(DATA.last_updated)+'</p></div>'
+  html += scopeBanner()
   if (urgent.length > 0) {
     html += '<div class="alerte-strip"><div class="alerte-icon">&#128680;</div><div><div class="alerte-title">Alerte phytosanitaire — '+urgent.length+' menace'+(urgent.length>1?'s':'')+' \xe0 urgence \xe9lev\xe9e</div><div class="alerte-desc">'+urgent.slice(0,3).map(function(v){return v.name+' ('+v.count+' cas)'}).join(' • ')+'</div></div></div>'
   }
   html += '<div class="kpi-grid">'
-  html += kpiCard('','&#128106;',k.users,'B\xe9n\xe9ficiaires inscrits')
+  html += kpiCard('','&#128106;',
+    isOrgScope() ? DATA.beneficiaires_rattaches : k.users,
+    isOrgScope() ? 'B\xe9n\xe9ficiaires rattach\xe9s' : 'B\xe9n\xe9ficiaires inscrits')
   html += kpiCard('kpi-amber','&#127807;',k.productions,'Productions enregistr\xe9es')
   html += kpiCard('kpi-blue','&#128205;',regs.length||null,'R\xe9gions couvertes')
   html += kpiCard('kpi-purple','&#128300;',k.diagnostics,'Diagnostics r\xe9alis\xe9s')
@@ -385,6 +636,7 @@ function renderTerrain() {
   var vuln=(ong.diagnostics&&ong.diagnostics.vulnerabilite)||[]
   var diagTotal=(ong.diagnostics&&ong.diagnostics.total)||0,kpis=DATA.kpis||{}
   var html='<div class="page-header"><h2 class="section-title">Terrain agricole</h2><p class="section-sub">Scores agricoles, cultures pratiqu\xe9es et sant\xe9 phytosanitaire</p></div>'
+  html+=scopeBanner()
   html+='<div class="kpi-grid" style="grid-template-columns:repeat(5,1fr)">'
   html+=kpiCard('','&#128106;',g.total||null,'B\xe9n\xe9ficiaires suivis')
   html+=kpiCard('kpi-blue','&#9989;',g.eligible||null,'\xc9ligibles cr\xe9dit')
