@@ -264,11 +264,12 @@ var TAB_META = {
   overview: {icon:'chart',    label:"Vue d'ensemble"},
   terrain:  {icon:'sprout',   label:'Terrain'},
   carte:    {icon:'map',      label:'Carte'},
+  programmes:{icon:'clipboard',label:'Programmes'},
   formations:{icon:'grad',    label:'Formations'},
   alertes:  {icon:'alert',    label:'Alertes & Risques'},
   calendrier:{icon:'calendar',label:'Calendrier cultural'}
 }
-var ONG_TABS = ['overview','terrain','carte','formations','alertes','calendrier']
+var ONG_TABS = ['overview','terrain','carte','programmes','formations','alertes','calendrier']
 
 // ════ ICÔNES SVG (remplacement des emojis — rendu professionnel) ═══════════════
 var SVGI = {
@@ -415,7 +416,123 @@ async function fetchAndRender() {
 }
 
 function renderCurrentTab() {
-  ({overview:renderOverview, terrain:renderTerrain, carte:renderCarte, formations:renderFormations, alertes:renderAlertes, calendrier:renderCalendrier}[currentTab]||renderOverview)()
+  ({overview:renderOverview, terrain:renderTerrain, carte:renderCarte, programmes:renderProgrammes, formations:renderFormations, alertes:renderAlertes, calendrier:renderCalendrier}[currentTab]||renderOverview)()
+}
+
+// ════ PROGRAMMES — génération et gestion des codes d'inscription ═══════════════
+var PROJETS = null
+
+async function renderProgrammes() {
+  var html = '<div class="page-header"><h2 class="section-title">Programmes &amp; codes d\'inscription</h2>'
+  html += '<p class="section-sub">Créez un code par projet et communiquez-le à vos bénéficiaires. '
+  html += 'Dès qu\'un agriculteur saisit ce code dans l\'app (avec son consentement), ses données apparaissent ici.</p></div>'
+
+  // Formulaire de création
+  html += '<div class="table-card" style="padding:20px;margin-bottom:20px">'
+  html += '<div class="table-title" style="margin-bottom:14px">Nouveau programme</div>'
+  html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">'
+  html += '<div><label style="font-size:12px;color:var(--muted);font-weight:600;display:block;margin-bottom:5px">Nom du programme *</label>'
+  html += '<input id="progNom" class="search-input" style="width:100%" placeholder="Ex : Résilience Nord 2026"></div>'
+  html += '<div><label style="font-size:12px;color:var(--muted);font-weight:600;display:block;margin-bottom:5px">Bailleur (optionnel)</label>'
+  html += '<input id="progBailleur" class="search-input" style="width:100%" placeholder="Ex : PAM, GIZ, FIDA"></div>'
+  html += '<div><label style="font-size:12px;color:var(--muted);font-weight:600;display:block;margin-bottom:5px">Code personnalisé (optionnel)</label>'
+  html += '<input id="progCode" class="search-input" style="width:100%;text-transform:uppercase" placeholder="Laisser vide = généré automatiquement"></div>'
+  html += '<div style="display:flex;align-items:flex-end">'
+  html += '<button class="refresh-btn" style="background:var(--vert2);color:#fff;border:none;height:37px;padding:0 20px" onclick="createProgramme()">Créer le programme</button></div>'
+  html += '</div>'
+  html += '<div id="progFormMsg" style="font-size:12.5px;margin-top:10px"></div>'
+  html += '</div>'
+
+  // Liste des programmes
+  html += '<div id="progList"><div class="loading"><div class="spinner"></div><div>Chargement des programmes…</div></div></div>'
+  setMain(html)
+  loadProgrammes()
+}
+
+async function loadProgrammes() {
+  try {
+    var res = await fetch(FUNCTIONS_URL + '/ong-projects', {
+      method:'POST', headers:{'Authorization':'Bearer '+TOKEN,'Content-Type':'application/json'},
+      body: JSON.stringify({action:'list'})
+    })
+    var data = await res.json()
+    PROJETS = data.projets || []
+    renderProgList()
+  } catch (e) {
+    var el = document.getElementById('progList')
+    if (el) el.innerHTML = '<div class="warn-banner">Impossible de charger les programmes : '+esc(e.message)+'</div>'
+  }
+}
+
+function renderProgList() {
+  var el = document.getElementById('progList'); if(!el) return
+  if (!PROJETS || PROJETS.length === 0) {
+    el.innerHTML = '<div class="info-banner">Aucun programme pour le moment. Créez-en un ci-dessus pour obtenir votre premier code d\'inscription.</div>'
+    return
+  }
+  var h = '<div class="table-card"><div class="table-head"><div class="table-title">Vos programmes ('+PROJETS.length+')</div></div>'
+  h += '<table><thead><tr><th>Programme</th><th>Bailleur</th><th>Code</th><th style="text-align:center">Bénéficiaires</th><th style="text-align:center">Statut</th><th></th></tr></thead><tbody>'
+  PROJETS.forEach(function(p){
+    h += '<tr>'
+    h += '<td><strong>'+esc(p.nom)+'</strong></td>'
+    h += '<td>'+(p.bailleur?esc(p.bailleur):'<span style="color:var(--muted)">—</span>')+'</td>'
+    h += '<td><span style="font-family:\'DM Mono\',monospace;font-weight:600;color:var(--vert);background:var(--vert-bg);padding:3px 8px;border-radius:6px">'+esc(p.code_inscription)+'</span> '
+    h += '<button class="btn-outline" style="padding:2px 8px;font-size:11px" onclick="copyCode(\''+esc(p.code_inscription)+'\')">Copier</button></td>'
+    h += '<td style="text-align:center;font-weight:600">'+(p.beneficiaires||0)+'</td>'
+    h += '<td style="text-align:center">'+(p.is_active
+        ? '<span class="badge b-green">Actif</span>'
+        : '<span class="badge b-gray">Désactivé</span>')+'</td>'
+    h += '<td style="text-align:right"><button class="btn-outline" style="padding:4px 10px;font-size:11px" onclick="toggleProgramme('+p.id+','+(!p.is_active)+')">'
+    h += (p.is_active?'Désactiver':'Réactiver')+'</button></td>'
+    h += '</tr>'
+  })
+  h += '</tbody></table></div>'
+  el.innerHTML = h
+}
+
+async function createProgramme() {
+  var nom = (document.getElementById('progNom').value||'').trim()
+  var bailleur = (document.getElementById('progBailleur').value||'').trim()
+  var code = (document.getElementById('progCode').value||'').trim()
+  var msg = document.getElementById('progFormMsg')
+  if (nom.length < 3) { msg.innerHTML = '<span style="color:var(--red)">Le nom du programme est requis.</span>'; return }
+  msg.innerHTML = '<span style="color:var(--muted)">Création en cours…</span>'
+  try {
+    var res = await fetch(FUNCTIONS_URL + '/ong-projects', {
+      method:'POST', headers:{'Authorization':'Bearer '+TOKEN,'Content-Type':'application/json'},
+      body: JSON.stringify({action:'create', nom:nom, bailleur:bailleur, code:code})
+    })
+    var data = await res.json()
+    if (data.success && data.projet) {
+      msg.innerHTML = '<span style="color:var(--vert)">✅ Programme créé — code : <b>'+esc(data.projet.code_inscription)+'</b></span>'
+      document.getElementById('progNom').value=''; document.getElementById('progBailleur').value=''; document.getElementById('progCode').value=''
+      loadProgrammes()
+    } else {
+      msg.innerHTML = '<span style="color:var(--red)">'+esc(data.error||'Erreur')+'</span>'
+    }
+  } catch (e) {
+    msg.innerHTML = '<span style="color:var(--red)">Erreur réseau : '+esc(e.message)+'</span>'
+  }
+}
+
+async function toggleProgramme(projetId, isActive) {
+  try {
+    await fetch(FUNCTIONS_URL + '/ong-projects', {
+      method:'POST', headers:{'Authorization':'Bearer '+TOKEN,'Content-Type':'application/json'},
+      body: JSON.stringify({action:'toggle', projet_id:projetId, is_active:isActive})
+    })
+    loadProgrammes()
+  } catch (e) { alert('Erreur : '+e.message) }
+}
+
+function copyCode(code) {
+  try {
+    navigator.clipboard.writeText(code)
+  } catch (e) {
+    var ta = document.createElement('textarea'); ta.value = code; document.body.appendChild(ta); ta.select()
+    try { document.execCommand('copy') } catch(_){}
+    document.body.removeChild(ta)
+  }
 }
 
 // ── PÉRIMÈTRE DONNÉES (bénéficiaires rattachés vs vue globale) ────────────────
